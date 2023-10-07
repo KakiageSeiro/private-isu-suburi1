@@ -591,6 +591,7 @@ func getPostsID(w http.ResponseWriter, r *http.Request) {
 	}{p, me})
 }
 
+// ツイートする処理。Post(投稿/マイクロブログ)をPost(HTTPメソッド)するという表現になるのでわかりにくいけどツイートをPostと言えばわかりやすい
 func postIndex(w http.ResponseWriter, r *http.Request) {
 	me := getSessionUser(r)
 	if !isLogin(me) {
@@ -603,6 +604,7 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 画像があるかどうかチェック
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		session := getSession(r)
@@ -613,16 +615,21 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ファイルタイプと拡張子を決定する
 	mime := ""
+	ext := ""
 	if file != nil {
 		// 投稿のContent-Typeからファイルのタイプを決定する
 		contentType := header.Header["Content-Type"][0]
 		if strings.Contains(contentType, "jpeg") {
 			mime = "image/jpeg"
+			ext = "jpg"
 		} else if strings.Contains(contentType, "png") {
 			mime = "image/png"
+			ext = "png"
 		} else if strings.Contains(contentType, "gif") {
 			mime = "image/gif"
+			ext = "gif"
 		} else {
 			session := getSession(r)
 			session.Values["notice"] = "投稿できる画像形式はjpgとpngとgifだけです"
@@ -633,12 +640,14 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// ファイル読み込み
 	filedata, err := io.ReadAll(file)
 	if err != nil {
 		log.Print(err)
 		return
 	}
 
+	// ファイルサイズチェック
 	if len(filedata) > UploadLimit {
 		session := getSession(r)
 		session.Values["notice"] = "ファイルサイズが大きすぎます"
@@ -648,12 +657,13 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// RDBにinsert
 	query := "INSERT INTO `posts` (`user_id`, `mime`, `imgdata`, `body`) VALUES (?,?,?,?)"
 	result, err := db.Exec(
 		query,
 		me.ID,
 		mime,
-		filedata,
+		"", // バイナリはDBに保存せず静的ファイルにすることにした
 		r.FormValue("body"),
 	)
 	if err != nil {
@@ -661,7 +671,16 @@ func postIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 採番されたidを取得
 	pid, err := result.LastInsertId()
+	if err != nil {
+		log.Print(err)
+		return
+	}
+
+	// アップロードされたテンポラリファイルを静的ファイルにする
+	filepath := path.Join("/home/isucon/private_isu/webapp/public/image", strconv.FormatInt(pid, 10)+"."+ext)
+	err = os.WriteFile(filepath, filedata, 0644) // ファイルを作成する
 	if err != nil {
 		log.Print(err)
 		return
@@ -691,9 +710,19 @@ func getImage(w http.ResponseWriter, r *http.Request) {
 		ext == "png" && post.Mime == "image/png" ||
 		ext == "gif" && post.Mime == "image/gif" {
 		w.Header().Set("Content-Type", post.Mime)
-		_, err := w.Write(post.Imgdata)
+
+		// もともとRDBにバイナリとして保存していた画像は静的ファイルにするようにしたので、取得したときに静的ファイル化することで次回取得時はnginxが静的ファイル置き場のディレクトリから配信してくれるようになる
+		// というわけでpost.Imgdataを静的ファイルにする
+		filepath := path.Join("/home/isucon/private_isu/webapp/public/image", strconv.Itoa(post.ID)+"."+ext)
+		err = os.WriteFile(filepath, post.Imgdata, 0644) // ファイルを作成する
 		if err != nil {
-			log.Print(err)
+			log.Print("■■■2:", err)
+			return
+		}
+
+		_, err = w.Write(post.Imgdata)
+		if err != nil {
+			log.Print("■■■3:", err)
 			return
 		}
 		return
@@ -759,6 +788,7 @@ func getAdminBanned(w http.ResponseWriter, r *http.Request) {
 	}{users, me, getCSRFToken(r)})
 }
 
+// アカウントのBan処理
 func postAdminBanned(w http.ResponseWriter, r *http.Request) {
 	me := getSessionUser(r)
 	if !isLogin(me) {
@@ -776,6 +806,7 @@ func postAdminBanned(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// del_flg=1でBanを表現してる。0は通常のユーザー
 	query := "UPDATE `users` SET `del_flg` = ? WHERE `id` = ?"
 
 	err := r.ParseForm()
@@ -852,3 +883,4 @@ func main() {
 
 	log.Fatal(http.ListenAndServe(":8080", r))
 }
+
