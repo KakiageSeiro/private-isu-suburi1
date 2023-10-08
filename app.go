@@ -175,11 +175,13 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 	var posts []Post
 
 	for _, p := range results {
+		// コメント件数を取得
 		err := db.Get(&p.CommentCount, "SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?", p.ID)
 		if err != nil {
 			return nil, err
 		}
 
+		// コメントそのものを取得
 		query := "SELECT * FROM `comments` WHERE `post_id` = ? ORDER BY `created_at` DESC"
 		if !allComments {
 			query += " LIMIT 3"
@@ -190,6 +192,7 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 			return nil, err
 		}
 
+		// コメントを書いたユーザーを取得
 		for i := 0; i < len(comments); i++ {
 			err := db.Get(&comments[i].User, "SELECT * FROM `users` WHERE `id` = ?", comments[i].UserID)
 			if err != nil {
@@ -197,13 +200,14 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 			}
 		}
 
-		// reverse
+		// コメントを逆順にする
 		for i, j := 0, len(comments)-1; i < j; i, j = i+1, j-1 {
 			comments[i], comments[j] = comments[j], comments[i]
 		}
 
 		p.Comments = comments
 
+		// 投稿したユーザーを取得
 		err = db.Get(&p.User, "SELECT * FROM `users` WHERE `id` = ?", p.UserID)
 		if err != nil {
 			return nil, err
@@ -211,9 +215,12 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 
 		p.CSRFToken = csrfToken
 
+		// 削除されていないユーザーの投稿のみ表示する
 		if p.User.DelFlg == 0 {
 			posts = append(posts, p)
 		}
+
+		// 20件に制限
 		if len(posts) >= postsPerPage {
 			break
 		}
@@ -386,7 +393,15 @@ func getIndex(w http.ResponseWriter, r *http.Request) {
 
 	results := []Post{}
 
-	err := db.Select(&results, "SELECT `id`, `user_id`, `body`, `mime`, `created_at` FROM `posts` ORDER BY `created_at` DESC")
+	sql := 
+		"SELECT posts.id, posts.user_id, posts.body, posts.mime, posts.created_at " +
+		"FROM `posts` " +
+		"JOIN `users` " +
+			"ON (posts.user_id = users.id) " +
+		"WHERE users.del_flg = 0 " +
+		"ORDER BY posts.created_at DESC " +
+		"LIMIT 20"
+	err := db.Select(&results, sql)
 	if err != nil {
 		log.Print(err)
 		return
