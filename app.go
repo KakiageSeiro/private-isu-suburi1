@@ -602,8 +602,8 @@ func getPosts(w http.ResponseWriter, r *http.Request) {
 			"FROM `posts` " +
 			"JOIN `users` " +
 			"ON (posts.user_id = users.id) " +
-			"WHERE users.created_at = 0 " +
-			"AND posts.del_flg <= ? " +
+			"WHERE users.del_flg = 0 " +
+			"AND posts.created_at <= ? " +
 			"ORDER BY posts.created_at DESC " +
 			"LIMIT 20"
 	err = db.Select(&result_dto_list, sql, t.Format(ISO8601Format))
