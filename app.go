@@ -176,41 +176,33 @@ func getFlash(w http.ResponseWriter, r *http.Request, key string) string {
 func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, error) {
 	var posts []Post
 
-	for _, p := range results {
+	for _, post := range results {
 		// コメント件数を取得■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
 		// memcachedにあるならそれをつかう。なければDBから取得する
-		memcachedKeyAllcomments := "comments." + strconv.Itoa(p.ID) + ".count"
+		memcachedKeyAllcomments := "comments." + strconv.Itoa(post.ID) + ".count"
 		itemOfAllcomments, err := memcacheClient.Get(memcachedKeyAllcomments);
 		if err != nil {
 			// キャッシュになかったのでDBから取得する
-			err := db.Get(&p.CommentCount, "SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?", p.ID)
+			err := db.Get(&post.CommentCount, "SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?", post.ID)
 			if err != nil {
 				return nil, err
 			}
 
 			// DBから取得した結果をキャッシュする
-			err = memcacheClient.Set(&memcache.Item{Key: memcachedKeyAllcomments, Value: []byte(strconv.Itoa(p.CommentCount)), Expiration: 10})
+			err = memcacheClient.Set(&memcache.Item{Key: memcachedKeyAllcomments, Value: []byte(strconv.Itoa(post.CommentCount)), Expiration: 10})
 			if err != nil {
 				return nil, err
 			}
 		} else {
 			// キャッシュあった
-			p.CommentCount, err = strconv.Atoi(string(itemOfAllcomments.Value))
+			post.CommentCount, err = strconv.Atoi(string(itemOfAllcomments.Value))
 			if err != nil {
 				return nil, err
 			}
 		}
 
-
-
-
-
-
-		
-
-
-		// コメントそのものを取得■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
-		memcachedKeyComments := "comments." + strconv.Itoa(p.ID)
+		// コメントそのものと、コメントしたユーザーを合わせて取得■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+		memcachedKeyComments := "comments." + strconv.Itoa(post.ID)
 		var comments []Comment
 		itemOfComments, err := memcacheClient.Get(memcachedKeyComments)
 		if err == nil {
@@ -221,38 +213,81 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 			}
 		} else {
 			// キャッシュがない場合はDBから取得する
-			query := "SELECT * FROM `comments` WHERE `post_id` = ? ORDER BY `created_at` DESC"
+
+			var commentDtoList []struct {
+				C_ID     int `db:"c_id"`
+				C_PostID  int    `db:"post_id"`
+				C_UserID    int       `db:"user_id"`
+				C_Comment   string    `db:"comment"`
+				C_CreatedAt time.Time `db:"c_created_at"`
+
+				U_ID          int    `db:"u_id"`
+				U_AccountName string `db:"account_name"`
+				U_Passhash  string `db:"passhash"`
+				U_Authority int       `db:"authority"`
+				U_DelFlg    int       `db:"del_flg"`
+				U_CreatedAt time.Time `db:"u_created_at"`
+			}
+
+			query :=
+				"SELECT " +
+					"c.`id` AS c_id , " +
+					"c.`post_id`, " +
+					"c.`user_id`, " +
+					"c.`comment`, " +
+					"c.`created_at` AS c_created_at, " +
+
+					"u.`id` AS u_id, " +
+					"u.`account_name`, " +
+					"u.`passhash`, " +
+					"u.`authority`, " +
+					"u.`del_flg`, " +
+					"u.`created_at` AS u_created_at " +
+				"FROM `comments` AS c " +
+				"JOIN `users` AS u " +
+					"ON c.`user_id` = u.`id` " +
+				"WHERE c.`post_id` = ? ORDER BY c.`created_at` DESC"
 			if !allComments {
 				query += " LIMIT 3"
 			}
-			err = db.Select(&comments, query, p.ID)
+			log.Print("■■■query■", query)
+			err = db.Select(&commentDtoList, query, post.ID)
 			if err != nil {
+				log.Print("■■■4", err)
 				return nil, err
+			}
+
+			// 結果をComment構造体にマッピング
+			for _, dto := range commentDtoList {
+				comment := Comment{
+					ID:        dto.C_ID,
+					PostID:    dto.C_PostID,
+					UserID:    dto.C_UserID,
+					Comment:   dto.C_Comment,
+					CreatedAt: dto.C_CreatedAt,
+				}
+
+				comment.User = User{
+					ID:          dto.U_ID,
+					AccountName: dto.U_AccountName,
+					Passhash:    dto.U_Passhash,
+					Authority:   dto.U_Authority,
+					DelFlg:      dto.U_DelFlg,
+					CreatedAt:   dto.U_CreatedAt,
+				}
+
+				comments = append(comments, comment)
 			}
 
 			// DBから取得した結果をキャッシュする
 			commentsJSON, err := json.Marshal(comments)
 			if err != nil {
+				log.Print("■■■5", err)
 				return nil, err
 			}
 			err = memcacheClient.Set(&memcache.Item{Key: memcachedKeyComments, Value: commentsJSON, Expiration: 10})
 			if err != nil {
-				return nil, err
-			}
-		}
-
-
-
-
-
-
-
-
-
-		// コメントを書いたユーザーを取得
-		for i := 0; i < len(comments); i++ {
-			err := db.Get(&comments[i].User, "SELECT * FROM `users` WHERE `id` = ?", comments[i].UserID)
-			if err != nil {
+				log.Print("■■■6", err)
 				return nil, err
 			}
 		}
@@ -262,11 +297,11 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 			comments[i], comments[j] = comments[j], comments[i]
 		}
 
-		p.Comments = comments
+		post.Comments = comments
 
-		p.CSRFToken = csrfToken
+		post.CSRFToken = csrfToken
 
-		posts = append(posts, p)
+		posts = append(posts, post)
 	}
 
 	return posts, nil
