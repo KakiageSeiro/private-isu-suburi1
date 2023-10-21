@@ -2,6 +2,7 @@ package main
 
 import (
 	crand "crypto/rand"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"io"
@@ -176,10 +177,10 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 	var posts []Post
 
 	for _, p := range results {
-		// コメント件数を取得
+		// コメント件数を取得■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
 		// memcachedにあるならそれをつかう。なければDBから取得する
 		memcachedKeyAllcomments := "comments." + strconv.Itoa(p.ID) + ".count"
-		item, err := memcacheClient.Get(memcachedKeyAllcomments);
+		itemOfAllcomments, err := memcacheClient.Get(memcachedKeyAllcomments);
 		if err != nil {
 			// キャッシュになかったのでDBから取得する
 			err := db.Get(&p.CommentCount, "SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?", p.ID)
@@ -194,7 +195,47 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 			}
 		} else {
 			// キャッシュあった
-			p.CommentCount, err = strconv.Atoi(string(item.Value))
+			p.CommentCount, err = strconv.Atoi(string(itemOfAllcomments.Value))
+			if err != nil {
+				return nil, err
+			}
+		}
+
+
+
+
+
+
+		
+
+
+		// コメントそのものを取得■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+		memcachedKeyComments := "comments." + strconv.Itoa(p.ID)
+		var comments []Comment
+		itemOfComments, err := memcacheClient.Get(memcachedKeyComments)
+		if err == nil {
+			// キャッシュある場合。コメントは複数なので、jsonとして保存、取出する。
+			err := json.Unmarshal(itemOfComments.Value, &comments)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			// キャッシュがない場合はDBから取得する
+			query := "SELECT * FROM `comments` WHERE `post_id` = ? ORDER BY `created_at` DESC"
+			if !allComments {
+				query += " LIMIT 3"
+			}
+			err = db.Select(&comments, query, p.ID)
+			if err != nil {
+				return nil, err
+			}
+
+			// DBから取得した結果をキャッシュする
+			commentsJSON, err := json.Marshal(comments)
+			if err != nil {
+				return nil, err
+			}
+			err = memcacheClient.Set(&memcache.Item{Key: memcachedKeyComments, Value: commentsJSON, Expiration: 10})
 			if err != nil {
 				return nil, err
 			}
@@ -207,18 +248,6 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 
 
 
-
-
-		// コメントそのものを取得
-		query := "SELECT * FROM `comments` WHERE `post_id` = ? ORDER BY `created_at` DESC"
-		if !allComments {
-			query += " LIMIT 3"
-		}
-		var comments []Comment
-		err = db.Select(&comments, query, p.ID)
-		if err != nil {
-			return nil, err
-		}
 
 		// コメントを書いたユーザーを取得
 		for i := 0; i < len(comments); i++ {
