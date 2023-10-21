@@ -26,6 +26,7 @@ import (
 
 var (
 	db    *sqlx.DB
+	memcacheClient *memcache.Client
 	store *gsm.MemcacheStore
 )
 
@@ -71,7 +72,7 @@ func init() {
 	if memdAddr == "" {
 		memdAddr = "localhost:11211"
 	}
-	memcacheClient := memcache.New(memdAddr)
+	memcacheClient = memcache.New(memdAddr)
 	store = gsm.NewMemcacheStore(memcacheClient, "iscogram_", []byte("sendagaya"))
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 }
@@ -176,10 +177,37 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 
 	for _, p := range results {
 		// コメント件数を取得
-		err := db.Get(&p.CommentCount, "SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?", p.ID)
+		// memcachedにあるならそれをつかう。なければDBから取得する
+		memcachedKeyAllcomments := "comments." + strconv.Itoa(p.ID) + ".count"
+		item, err := memcacheClient.Get(memcachedKeyAllcomments);
 		if err != nil {
-			return nil, err
+			// キャッシュになかったのでDBから取得する
+			err := db.Get(&p.CommentCount, "SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?", p.ID)
+			if err != nil {
+				return nil, err
+			}
+
+			// DBから取得した結果をキャッシュする
+			err = memcacheClient.Set(&memcache.Item{Key: memcachedKeyAllcomments, Value: []byte(strconv.Itoa(p.CommentCount)), Expiration: 10})
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			// キャッシュあった
+			p.CommentCount, err = strconv.Atoi(string(item.Value))
+			if err != nil {
+				return nil, err
+			}
 		}
+
+
+
+
+
+
+
+
+
 
 		// コメントそのものを取得
 		query := "SELECT * FROM `comments` WHERE `post_id` = ? ORDER BY `created_at` DESC"
