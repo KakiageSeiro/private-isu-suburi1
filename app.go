@@ -23,6 +23,8 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/sessions"
 	"github.com/jmoiron/sqlx"
+
+	"net/http/pprof"
 )
 
 var (
@@ -250,10 +252,8 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 			if !allComments {
 				query += " LIMIT 3"
 			}
-			log.Print("■■■query■", query)
 			err = db.Select(&commentDtoList, query, post.ID)
 			if err != nil {
-				log.Print("■■■4", err)
 				return nil, err
 			}
 
@@ -282,12 +282,10 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 			// DBから取得した結果をキャッシュする
 			commentsJSON, err := json.Marshal(comments)
 			if err != nil {
-				log.Print("■■■5", err)
 				return nil, err
 			}
 			err = memcacheClient.Set(&memcache.Item{Key: memcachedKeyComments, Value: commentsJSON, Expiration: 10})
 			if err != nil {
-				log.Print("■■■6", err)
 				return nil, err
 			}
 		}
@@ -953,13 +951,11 @@ func getImage(w http.ResponseWriter, r *http.Request) {
 		filepath := path.Join("/home/isucon/private_isu/webapp/public/image", strconv.Itoa(post.ID)+"."+ext)
 		err = os.WriteFile(filepath, post.Imgdata, 0644) // ファイルを作成する
 		if err != nil {
-			log.Print("■■■2:", err)
 			return
 		}
 
 		_, err = w.Write(post.Imgdata)
 		if err != nil {
-			log.Print("■■■3:", err)
 			return
 		}
 		return
@@ -1118,8 +1114,19 @@ func main() {
 		http.FileServer(http.Dir("../public")).ServeHTTP(w, r)
 	})
 
-	log.Fatal(http.ListenAndServe(":8080", r))
+	r.HandleFunc("/debug/pprof/", pprof.Index)
+	r.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	r.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	r.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	r.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	r.HandleFunc("/debug/pprof/heap", pprof.Handler("heap").ServeHTTP)
+
+	server := &http.Server{
+		Addr:         ":8080", 				// サーバーのポート
+		Handler:      r,       				// ルーターを設定
+		ReadTimeout:  110 * time.Second, 	// リクエストの読み取りタイムアウト
+		WriteTimeout: 110 * time.Second, 	// レスポンスの書き込みタイムアウト
+	}
+	log.Fatal(server.ListenAndServe())
 }
-
-
 
