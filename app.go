@@ -2,6 +2,7 @@ package main
 
 import (
 	crand "crypto/rand"
+	"crypto/sha512"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -10,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path"
 	"regexp"
 	"strconv"
@@ -121,14 +121,7 @@ func escapeshellarg(arg string) string {
 }
 
 func digest(src string) string {
-	// opensslのバージョンによっては (stdin)= というのがつくので取る
-	out, err := exec.Command("/bin/bash", "-c", `printf "%s" `+escapeshellarg(src)+` | openssl dgst -sha512 | sed 's/^.*= //'`).Output()
-	if err != nil {
-		log.Print(err)
-		return ""
-	}
-
-	return strings.TrimSuffix(string(out), "\n")
+	return fmt.Sprintf("%x", sha512.Sum512([]byte(src)))
 }
 
 func calculateSalt(accountName string) string {
@@ -178,12 +171,28 @@ func getFlash(w http.ResponseWriter, r *http.Request, key string) string {
 func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, error) {
 	var posts []Post
 
+	// memcachedへのアクセス回数を一回にするために、keyをまとめる
+	var memcachedKeyAllcomments []string
+	for _, post := range results {
+		memcachedKeyAllcomments = append(memcachedKeyAllcomments, "comments." + strconv.Itoa(post.ID) + ".count")
+	}
+
+	itemOfAllComments, err := memcacheClient.GetMulti(memcachedKeyAllcomments);
+	if err != nil {
+		return nil, err
+	}
+
 	for _, post := range results {
 		// コメント件数を取得■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
 		// memcachedにあるならそれをつかう。なければDBから取得する
-		memcachedKeyAllcomments := "comments." + strconv.Itoa(post.ID) + ".count"
-		itemOfAllcomments, err := memcacheClient.Get(memcachedKeyAllcomments);
-		if err != nil {
+		key := "comments." + strconv.Itoa(post.ID) + ".count"
+		if val, ok := itemOfAllComments[key]; ok {
+			// キャッシュあった
+			post.CommentCount, err = strconv.Atoi(string(val.Value))
+			if err != nil {
+				return nil, err
+			}
+		} else {
 			// キャッシュになかったのでDBから取得する
 			err := db.Get(&post.CommentCount, "SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?", post.ID)
 			if err != nil {
@@ -191,13 +200,7 @@ func makePosts(results []Post, csrfToken string, allComments bool) ([]Post, erro
 			}
 
 			// DBから取得した結果をキャッシュする
-			err = memcacheClient.Set(&memcache.Item{Key: memcachedKeyAllcomments, Value: []byte(strconv.Itoa(post.CommentCount)), Expiration: 10})
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			// キャッシュあった
-			post.CommentCount, err = strconv.Atoi(string(itemOfAllcomments.Value))
+			err = memcacheClient.Set(&memcache.Item{Key: key, Value: []byte(strconv.Itoa(post.CommentCount)), Expiration: 10})
 			if err != nil {
 				return nil, err
 			}
